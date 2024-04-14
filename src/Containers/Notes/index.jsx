@@ -4,7 +4,7 @@ import { succMessage, failMessage, loaderAction } from "../../actions/MessagesAc
 import Messages from "../../BasicComponents/Messages";
 import NoRecordSkeleton from "../../BasicComponents/NoRecordSkeleton";
 import { WithNavigation } from "../../BasicComponents/WithNavigation";
-import { debounce, downloadFile, getText, getToken, getUserInfo, removeUserSession } from "../../Globals/UtilityFunctions";
+import { debounce, downloadFile, generateRandomPassword, getText, getToken, getUserInfo, removeUserSession } from "../../Globals/UtilityFunctions";
 import { callDELETE, callGET } from "../../Globals/ApiUtils";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faDownload, faFileDownload, faRightToBracket, faShare, faShareNodes, faTrash } from "@fortawesome/free-solid-svg-icons";
@@ -18,7 +18,13 @@ import oceanImage from '../../assets/img/ocean-3605547_1280.jpg';
 import sunriseImage from '../../assets/img/sunrise-1014712_1280.jpg';
 import thunderstormImage from '../../assets/img/thunderstorm-3625405_1280.jpg';
 import noRecord from "../../assets/img/no-record.png";
+import { jsPDF } from "jspdf";
+import { NoteShareModal } from "./NoteShareModal";
+import SockJS from "sockjs-client/dist/sockjs";
+import { over } from "stompjs";
 
+let stompClient = null;
+let peerConnection = null;
 
 class NotesContainer extends Component {
 
@@ -28,7 +34,12 @@ class NotesContainer extends Component {
             tableData: [],
             searchKey: "",
         },
-        user: {}
+        user: {},
+        isShare: false,
+        sharingNote:{},
+        didIOffer: false,
+        tempPassword: '',
+        send: false,
     }
 
     componentDidMount = async () => {
@@ -37,6 +48,13 @@ class NotesContainer extends Component {
             this.setState({ user: user }, () => { this.setTableData(); });
 
         }
+    }
+
+    componentWillUnmount = () =>{
+      if(stompClient != null){
+      stompClient.send('/app/removeUser', {}, this.state.user.username);
+      stompClient.disconnect();
+    }
     }
 
     setTableData = async (searchKey = null) => {
@@ -131,7 +149,7 @@ class NotesContainer extends Component {
                                                                                     <span> | </span>
                                                                                     <FontAwesomeIcon icon={faDownload} title="Download as PDF" onClick={(e)=>{e.stopPropagation(); this.downloadPDFHandler(item);}}/>
                                                                                     <span> | </span>
-                                                                                    <FontAwesomeIcon icon={faShareNodes} title="Share"/>
+                                                                                    <FontAwesomeIcon icon={faShareNodes} title="Share" onClick={(e)=>{e.stopPropagation(); this.noteShareHandler(item);}}/>
                                                                                 </p>
                                                                             </div>
                                                                         </div>
@@ -164,29 +182,322 @@ class NotesContainer extends Component {
                         )
                 }
 
-
+{
+                (this.state.isShare) ?
+                    <NoteShareModal
+                    show={this.state.isShare}
+                    title = {this.state.sharingNote.title}
+                    closeHandler= {this.toggleShare}
+                    tempPassword={this.state.tempPassword}
+                    />
+                    :
+                    <></>
+            }
             </>
         )
     }
 
+    startTimer = (minutes, seconds) => {
+      const timerElement = document.getElementById('timer');
+      if (timerElement == null) {
+        return;
+      }
+      if (minutes === 0 && seconds === 0) {
+        timerElement.textContent = "Timer completed!";
+        this.setState({ send: false });
+        return;
+      }
+  
+      timerElement.textContent = `Expires in ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  
+      if (seconds === 0) {
+        setTimeout(() => this.startTimer(minutes - 1, 59), 1000);
+      } else {
+        setTimeout(() => this.startTimer(minutes, seconds - 1), 1000);
+      }
+    }
+    toggleShare =(note={})=>{
+      if(this.state.isShare){
+        stompClient.send('/app/removeUser', {}, this.state.user.username);
+        stompClient.disconnect();
+      }
+        this.setState(prevState =>({isShare: !prevState.isShare, sharingNote: note}));
+    }
+    noteShareHandler=(note)=>{
+      console.log(this.state.user);
+    //  return false;
+        this.toggleShare(note);
+        this.connect();
+
+    }
+    connect1 = async () => {
+        const {username} = this.state.user;
+        await this.createPeerConnection();
+    
+        try {
+          console.log("Creating offer...", peerConnection);
+          // Check if the connection is established before creating an offer
+          if (peerConnection.connectionState !== "connected") {
+            console.log("Connection not established yet. Waiting...");
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
+          }
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+          this.setState({ didIOffer: true });
+          const pass = generateRandomPassword();
+          console.log("offer", offer);
+          this.setState({ tempPassword: pass, send: true }, () => { this.startTimer(9, 95); });
+          const payload = {
+            "userName": username,
+            "offer": offer,
+            "password": pass,
+            //     "iceCandidate": this.state.candidate,
+            //     "userName": this.state.userName
+          };
+          stompClient.send('/app/offer', {}, JSON.stringify(payload)); // Send offer to signaling server
+    
+        } catch (err) {
+          console.log(err);
+        }
+      }
+
+      createPeerConnection = async (offerObj) => {
+        let peerConfiguration = {
+          iceServers: [
+            {
+              urls: [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302'
+              ]
+            }
+          ]
+        }
+        return new Promise(async (resolve, reject) => {
+          //RTCPeerConnection is the thing that creates the connection
+          //we can pass a config object, and that config object can contain stun servers
+          //which will fetch us ICE candidates
+          peerConnection = await new RTCPeerConnection(peerConfiguration)
+          // remoteStream = new MediaStream()
+          // remoteVideoEl.srcObject = remoteStream;
+    
+          const dataChannel = peerConnection.createDataChannel('file', { negotiated: true, id: 0 });
+          const MAXIMUM_SIZE_DATA_TO_SEND = 65535;
+    
+          // Handle data channel events
+          dataChannel.addEventListener('open', async () => {
+            console.log("sharingNte", this.state.sharingNote);
+            const {title, content} = this.state.sharingNote;
+            let buffer;
+            try {
+            // buffer = await content.arrayBuffer();
+            const encoder = new TextEncoder();
+          const uint8Array = encoder.encode(content);
+          buffer = uint8Array.buffer;
+            dataChannel.send(JSON.stringify({
+              fileName: `${title}.pdf`
+            }))
+            const totalBytes = buffer.byteLength;
+            let sentBytes = 0;
+            const chunkSize = 16 * 1024;
+            while (buffer.byteLength) {
+              const chunk = buffer.slice(0, chunkSize);
+              buffer = buffer.slice(chunkSize, buffer.byteLength);
+
+              dataChannel.send(chunk);
+              sentBytes += chunk.byteLength;
+            }
+            dataChannel.send(`EOF`);
+          } catch (error) {
+            console.error("Error sending file:", error);
+            // Handle error (e.g., display error message to user)
+          } finally {
+
+            this.setState({ tempPassword: '', send: false })
+          }
+            // return false;
+            // if (this.state.files.length > 0) {
+           /*   try {
+                for (let key = 0; key < this.state.files.length; key++) {
+                  let buffer;
+                  let file = this.state.files[key];
+                  console.log("file", file, "\n key", key);
+    
+                  buffer = await file.arrayBuffer();
+                  const totalBytes = buffer.byteLength;
+                  dataChannel.send(JSON.stringify({
+                    fileName: file.name
+                  }))
+                  let sentBytes = 0;
+                  const chunkSize = 16 * 1024;
+                  while (buffer.byteLength) {
+                    const chunk = buffer.slice(0, chunkSize);
+                    buffer = buffer.slice(chunkSize, buffer.byteLength);
+    
+                    dataChannel.send(chunk);
+                    sentBytes += chunk.byteLength;
+    
+                    // Update progress (replace with your UI update logic)
+                    // const progress = Math.floor((sentBytes / totalBytes) * 100);
+                    // this.updateProgress(progress);
+                  }
+                  dataChannel.send(`EOF`);
+    
+    
+                }
+              } catch (error) {
+                console.error("Error sending file:", error);
+                // Handle error (e.g., display error message to user)
+              } finally {
+    
+                this.setState({ tempPassword: '', send: false })
+              }
+            // }
+            */
+          });
+        
+          //  console.log('dataChannel.sen', `EOF-${this.state.files[0].name}`);
+    
+          dataChannel.addEventListener('error', this.onError);
+    
+    
+          peerConnection.addEventListener("signalingstatechange", (event) => {
+            console.log(event);
+            console.log(peerConnection.signalingState)
+          });
+    
+          peerConnection.addEventListener('icecandidate', async e => {
+    
+    
+            if (e.candidate) {
+              const { didIOffer } = this.state;
+              const { username } = this.state.user;
+              const iceCandidate = {
+                "iceCandidate": e.candidate,
+                "userName": username,
+                "didIOffer": didIOffer,
+              }
+              console.log("sender iceCandidate", iceCandidate);
+              await stompClient.send("/app/sendIceCandidateToSignalingServer", {}, JSON.stringify(iceCandidate));
+              // socket.emit('sendIceCandidateToSignalingServer',{
+              //     iceCandidate: e.candidate,
+              //     iceUserName: userName,
+              //     didIOffer,
+              // })    
+            }
+          })
+    
+          peerConnection.addEventListener('track', e => {
+            console.log("Got a track from the other peer!! How excting")
+            console.log('track', e)
+            // e.streams[0].getTracks().forEach(track=>{
+            //     remoteStream.addTrack(track,remoteStream);
+            //     console.log("Here's an exciting moment... fingers cross")
+            // })
+          })
+    
+          if (offerObj) {
+    
+    
+            //this won't be set when called from call();
+            //will be set when we call from answerOffer()
+            // console.log(peerConnection.signalingState) //should be stable because no setDesc has been run yet
+            await peerConnection.setRemoteDescription(offerObj.offer);
+            // console.log(peerConnection.signalingState) //should be have-remote-offer, because client2 has setRemoteDesc on the offer
+          }
+          resolve();
+        })
+      }
+    
+    connect = () => {
+        let Sock = new SockJS('http://localhost:8080/ws');
+        // console.log("sock", Sock);
+        stompClient = over(Sock);
+        stompClient.connect({}, this.onConnected, this.onError);
+      }
+
+      onConnected = () => {
+        const {username} = this.state.user;
+        const newClient = {
+          "userName": username,
+        }
+        stompClient.send("/app/new-client", {}, JSON.stringify(newClient));
+        stompClient.subscribe('/user/' + username + '/message', (response) => {
+          const iceCandidate = JSON.parse(response.body);
+          console.log("Received ICE candidate:", iceCandidate);
+          this.answerOffer(iceCandidate);
+        });
+        stompClient.subscribe(`/user/${username}/receivedIceCandidateFromServer`, (response) => {
+          const iceCandidate = JSON.parse(response.body);
+          console.log(" Received ICE candidate: receivedIceCandidateFromServer", iceCandidate);
+          this.addNewIceCandidate(iceCandidate);
+        })
+    
+        stompClient.subscribe(`/user/${username}/answerResponse`, this.addAnswer)
+
+        this.connect1();
+
+    
+      }
+      addAnswer = async (offerObj) => {
+        //addAnswer is called in socketListeners when an answerResponse is emitted.
+        //at this point, the offer and answer have been exchanged!
+        //now CLIENT1 needs to set the remote
+        const iceCandidate = JSON.parse(offerObj.body);
+        console.log("addAnswer", iceCandidate);
+        await peerConnection.setRemoteDescription(iceCandidate)
+        // console.log(peerConnection.signalingState)
+      }
+      answerOffer = async (offerObj) => {
+        const {username} = this.state.user;
+        await this.createPeerConnection(offerObj);
+        const answer = await peerConnection.createAnswer({}); //just to make the docs happy
+        await peerConnection.setLocalDescription(answer); //this is CLIENT2, and CLIENT2 uses the answer as the localDesc
+        console.log("offerObj", offerObj)
+        console.log("answer", answer)
+        // console.log(peerConnection.signalingState) //should be have-local-pranswer because CLIENT2 has set its local desc to it's answer (but it won't be)
+        //add the answer to the offerObj so the server knows which offer this is related to
+        offerObj.answer = answer;
+        offerObj.answererUserName = username;
+    
+        //emit the answer to the signaling server, so it can emit to CLIENT1
+        //expect a response from the server with the already existing ICE candidates
+        await stompClient.send('/app/newAnswer', {}, JSON.stringify(offerObj));
+        peerConnection.addIceCandidate(offerObj.iceCandidate);
+    
+        // peerConnection.setRemoteDescription(new RTCSessionDescription())
+        // const offerIceCandidates = await socket.emitWithAck('newAnswer',offerObj)
+        // offerIceCandidates.forEach(c=>{
+        //     peerConnection.addIceCandidate(c);
+        //     console.log("======Added Ice Candidate======")
+        // })
+        // console.log(offerIceCandidates)
+      }
+
+      addNewIceCandidate = (iceCandidate) => {
+        peerConnection.addIceCandidate(iceCandidate)
+        console.log("======Added Ice Candidate======")
+      }
+
+      onError =()=>{
+
+      }
     downloadPDFHandler = (note) => {
 
-        // const pdf = new jsPDF();
-        let 
-        // callGET(`/notes/download/${note.id}`)
-        // .then((response) => {
-        //     console.log("response", response);
-        //     // const binaryString = atob(response.data);
-        //     const bytes = new Uint8Array(response.data.length);
-        //     for (let i = 0; i < bytes.length; i++) {
-        //       bytes[i] = response.data.charCodeAt(i);
-        //     }
-
-        // // Create a Blob from the Uint8Array
-        // const blob = new Blob([bytes.buffer], { type: 'application/pdf' });
-        //     downloadFile(blob, `${note.title}.pdf`);
-        // });
-
+        this.props.loaderAction(true);
+        try{
+            let doc = new jsPDF('p', 'pt', 'a4');
+        
+            doc.html(`<div style="width:1350px">${note.content}</div>`, {
+                callback: function (doc) {
+                    doc.save(`${note.title}.pdf`);
+                },
+                html2canvas: { scale: 0.5 }
+            });
+        }catch(e){
+            console.error(e);
+        }finally{
+            this.props.loaderAction(false);
+        }
     }
     randomImage = () => {
         const images = [

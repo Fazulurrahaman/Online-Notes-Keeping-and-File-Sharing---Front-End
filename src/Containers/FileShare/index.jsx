@@ -40,6 +40,7 @@ class FileShareContainer extends Component {
 
   componentWillUnmount =()=>{
     stompClient.send('/app/removeUser', {}, this.state.userName);
+    stompClient.disconnect();
   }
   fileChangeHandler = (e) => {
     // this.props.loaderAction(true);
