@@ -7,11 +7,13 @@ import { over } from "stompjs";
 import { downloadFile, formatFileSize, generateRandomPassword, generateRandomUserName, getCompleteFile } from "../../Globals/UtilityFunctions";
 import { connect } from "react-redux";
 import { succMessage, failMessage, loaderAction } from "../../actions/MessagesAction";
+import { jsPDF } from "jspdf";
+
 // import { connectSocket } from "./WebRTC";
 
 let stompClient = null;
 let peerConnection = null;
-// let receiveFileChunks = [];
+let receiveFileChunks = [];
 // let receiveFileName;
 class FileShareContainer extends Component {
 
@@ -170,15 +172,32 @@ class FileShareContainer extends Component {
       const data = event.data;
       console.log("dataChannel===========>", data);
       if (data.byteLength) {
-        this.setState(prevState => ({ receiveFileChunks: [...prevState.receiveFileChunks, data] }));
-        // receiveFileChunks.push(data); 
+        // this.setState(prevState => ({ receiveFileChunks: [...prevState.receiveFileChunks, data] }));
+        receiveFileChunks.push(data); 
       } else if (data.toString() === 'EOF') {
         // Once all the chunks are received, combine them to form a Blob
-        const { receiveFileChunks, receiveFileName } = this.state;
+        const { receiveFileName } = this.state;
         const file = new Blob(receiveFileChunks);
         downloadFile(file, receiveFileName)
+        receiveFileChunks = [];
         this.setState({ receiveFileChunks: [], receiveFileName: '' });
-      } else {
+      } else if(data.toString() === 'EOF-STR'){
+        const { receiveFileName } = this.state;
+
+        let concatenatedBuffer;
+        receiveFileChunks.forEach(data => {
+            concatenatedBuffer = concatenatedBuffer ? this.concatenateBuffers(concatenatedBuffer, data) : data;
+        });
+       // Decode the concatenated buffer into a text string
+        const decoder = new TextDecoder('utf-8');
+        const text = decoder.decode(concatenatedBuffer);
+        const note ={
+          content: text,
+          title: receiveFileName
+        }
+        this.downloadPDFHandler(note);
+        console.log("uint8Array", concatenatedBuffer, "\n text", text);
+      }else {
         const initMessage = JSON.parse(data);
         console.log("initMessage", initMessage);
         this.setState({ receiveFileName: initMessage.fileName });
@@ -190,7 +209,31 @@ class FileShareContainer extends Component {
     }
 
   }
+  downloadPDFHandler = (note) => {
 
+    this.props.loaderAction(true);
+    try{
+        let doc = new jsPDF('p', 'pt', 'a4');
+    
+        doc.html(`<div style="width:1350px">${note.content}</div>`, {
+            callback: function (doc) {
+                doc.save(`${note.title}`);
+            },
+            html2canvas: { scale: 0.5 }
+        });
+    }catch(e){
+        console.error(e);
+    }finally{
+        this.props.loaderAction(false);
+    }
+}
+// Assuming concatenateBuffers is a function that concatenates Uint8Arrays
+ concatenateBuffers(buffer1, buffer2) {
+  const result = new Uint8Array(buffer1.length + buffer2.length);
+  result.set(buffer1, 0);
+  result.set(buffer2, buffer1.length);
+  return result;
+}
   startTimer = (minutes, seconds) => {
     const timerElement = document.getElementById('timer');
     if (timerElement == null) {

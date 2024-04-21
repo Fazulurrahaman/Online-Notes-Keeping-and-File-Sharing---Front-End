@@ -5,9 +5,9 @@ import Messages from "../../BasicComponents/Messages";
 import NoRecordSkeleton from "../../BasicComponents/NoRecordSkeleton";
 import { WithNavigation } from "../../BasicComponents/WithNavigation";
 import { debounce, downloadFile, generateRandomPassword, getText, getToken, getUserInfo, removeUserSession } from "../../Globals/UtilityFunctions";
-import { callDELETE, callGET } from "../../Globals/ApiUtils";
+import { callDELETE, callGET, callPatch } from "../../Globals/ApiUtils";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faDownload, faFileDownload, faRightToBracket, faShare, faShareNodes, faTrash } from "@fortawesome/free-solid-svg-icons";
+import { faDownload, faFileDownload, faHeartCircleMinus, faHeartCirclePlus, faRightToBracket, faShare, faShareNodes, faTrash } from "@fortawesome/free-solid-svg-icons";
 import boatImage from '../../assets/img/boat-8614314_1280.webp';
 import flowersImage from '../../assets/img/flowers-19830_1280.jpg';
 import mountainsImage1 from '../../assets/img/mountains-1587287_1280.jpg';
@@ -143,8 +143,8 @@ class NotesContainer extends Component {
                                                                                 <h6>{item.title}</h6>
                                                                                 <p>{parsedHtml}</p>
                                                                                 <p className="meta">
-                                                                                    {/* <time className="updated" itemProp="datePublished">{item.updatedAt}</time>
-                                                                                    <span> | </span> */}
+                                                                                    <FontAwesomeIcon icon={item.isFavourite ? faHeartCircleMinus : faHeartCirclePlus} title={`${item.isFavourite ? 'Remove from favourite' : 'Add to favourite'}`} onClick={(e)=>{e.stopPropagation(); this.addOrRemoveFavourite(item);}}/>
+                                                                                    <span> | </span> 
                                                                                     <FontAwesomeIcon icon={faTrash} title="Delete" onClick={(e) => { e.stopPropagation(); this.deleteHanlder(item.id); }} />
                                                                                     <span> | </span>
                                                                                     <FontAwesomeIcon icon={faDownload} title="Download as PDF" onClick={(e)=>{e.stopPropagation(); this.downloadPDFHandler(item);}}/>
@@ -197,6 +197,33 @@ class NotesContainer extends Component {
         )
     }
 
+    addOrRemoveFavourite = (note) =>{
+     
+      const payload ={
+        ...note,
+        isFavourite: !note.isFavourite
+      }
+      this.props.loaderAction(true);
+      console.log("note", payload);
+      callPatch('/notes/favourite', payload)
+      .then(response =>{
+        if (response.status == 200) {
+          const responseData = response.data;
+          if (responseData.code === 200) {
+            if(payload.isFavourite){
+              this.props.succMessage("Note added as favourite");
+            }else{
+              this.props.succMessage("Note removed from favourite");
+            }
+            this.setTableData();
+          }else{
+            this.props.failMessage(responseData.message);
+
+          }
+        }
+      }).catch(e => this.props.failMessage(e.message))
+      .finally(()=> this.props.loaderAction(false))
+    }
     startTimer = (minutes, seconds) => {
       const timerElement = document.getElementById('timer');
       if (timerElement == null) {
@@ -285,75 +312,37 @@ class NotesContainer extends Component {
     
           // Handle data channel events
           dataChannel.addEventListener('open', async () => {
-            console.log("sharingNte", this.state.sharingNote);
-            const {title, content} = this.state.sharingNote;
+            const { title, content } = this.state.sharingNote;
             let buffer;
             try {
-            // buffer = await content.arrayBuffer();
-            const encoder = new TextEncoder();
-          const uint8Array = encoder.encode(content);
-          buffer = uint8Array.buffer;
-            dataChannel.send(JSON.stringify({
-              fileName: `${title}.pdf`
-            }))
-            const totalBytes = buffer.byteLength;
-            let sentBytes = 0;
-            const chunkSize = 16 * 1024;
-            while (buffer.byteLength) {
-              const chunk = buffer.slice(0, chunkSize);
-              buffer = buffer.slice(chunkSize, buffer.byteLength);
+                // Convert the string content to a Uint8Array
+                const encoder = new TextEncoder();
+                const uint8Array = encoder.encode(content);
+                buffer = uint8Array.buffer;
+                dataChannel.send(JSON.stringify({
+                    fileName: `${title}.pdf`
+                }));
+                const totalBytes = buffer.byteLength;
+                let sentBytes = 0;
+                const chunkSize = 16 * 1024;
+                console.log("sharingNte", uint8Array);
 
-              dataChannel.send(chunk);
-              sentBytes += chunk.byteLength;
-            }
-            dataChannel.send(`EOF`);
-          } catch (error) {
-            console.error("Error sending file:", error);
-            // Handle error (e.g., display error message to user)
-          } finally {
-
-            this.setState({ tempPassword: '', send: false })
-          }
-            // return false;
-            // if (this.state.files.length > 0) {
-           /*   try {
-                for (let key = 0; key < this.state.files.length; key++) {
-                  let buffer;
-                  let file = this.state.files[key];
-                  console.log("file", file, "\n key", key);
-    
-                  buffer = await file.arrayBuffer();
-                  const totalBytes = buffer.byteLength;
-                  dataChannel.send(JSON.stringify({
-                    fileName: file.name
-                  }))
-                  let sentBytes = 0;
-                  const chunkSize = 16 * 1024;
-                  while (buffer.byteLength) {
-                    const chunk = buffer.slice(0, chunkSize);
-                    buffer = buffer.slice(chunkSize, buffer.byteLength);
-    
+                while (buffer.byteLength > 0) {
+                    const chunk = buffer.slice(0, Math.min(chunkSize, buffer.byteLength));
+                    buffer = buffer.slice(chunkSize);
                     dataChannel.send(chunk);
                     sentBytes += chunk.byteLength;
-    
-                    // Update progress (replace with your UI update logic)
-                    // const progress = Math.floor((sentBytes / totalBytes) * 100);
-                    // this.updateProgress(progress);
-                  }
-                  dataChannel.send(`EOF`);
-    
-    
                 }
-              } catch (error) {
+                dataChannel.send(`EOF-STR`);
+            } catch (error) {
                 console.error("Error sending file:", error);
                 // Handle error (e.g., display error message to user)
-              } finally {
-    
-                this.setState({ tempPassword: '', send: false })
-              }
-            // }
-            */
-          });
+            } finally {
+                this.setState({ tempPassword: '', send: false });
+            }
+        });
+        
+        
         
           //  console.log('dataChannel.sen', `EOF-${this.state.files[0].name}`);
     

@@ -100,7 +100,8 @@ const Editor = (props) => {
         title: title,
         content: editorHtml,
         userId: userData.id,
-        ...(param.id && { id: param.id })
+        ...(param.id && { id: param.id }),
+        isFavourite: false
     }
 console.log("payload", payload, "\n userData", userData);
     // return false;

@@ -29,6 +29,11 @@ export const callPUT = (url, body, header) => {
 	});
 }
 
+export const callPatch = (url, body, header) => {
+	return axios.patch(parameterizedURLAccessToken(url), body, {
+	  headers: header
+	});
+}
 export const callDELETE = (url,body={}) => {
 	return axios.delete(parameterizedURLAccessToken(url),{ data: body });
 }
